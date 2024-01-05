@@ -1,0 +1,245 @@
+%% Mouse SAM model - Master file
+% Morotti et al. Intracellular Na+ Modulates Pacemaking Activity in Murine
+% Sinoatrial Node Myocytes: An In Silico Analysis. Int. J. Mol. Sci. 2021,
+% 22(11), 5645; https://doi.org/10.3390/ijms22115645
+
+clear
+close all
+clc
+%% Parameterization selection
+% set model_index = 0 for original parameterization by Kharche et al
+% set model_index = 1 for introducing modifications in ICaL, Ito, Isus, and If only
+% set model_index = 2 for optimized model
+
+model_index = 2; 
+%% Loading initial conditions
+
+if model_index == 0
+    load yfin_Kharche % model_index = 0;
+    disp('Original Kharche et al. model')
+elseif model_index == 1
+	load yfin_Kharche_updated_currents % model_index = 1;
+    disp('Kharche et al. model w/ updated ICaL, Ito, Isus, and If')
+elseif model_index == 2
+    load yfin_Kharche_optimized % model_index = 2;
+    disp('Optimized model of the murine SAMs')
+end
+
+y0n = yfinal;
+%% Input parameters
+% Flag for Na-clamp
+Na_clamp = 0; % [0 for free Na, 1 for Na clamp]
+if Na_clamp == 1
+    disp('Na clamped')
+    %y0n(35) = 12;
+end
+
+Cscale = 10; % 0 to 10; 5,7 ; 0,9 136BMP
+Mscale = 10;
+Lscale = 10;
+
+CChscale = 10;
+ZT = 18;
+
+% Duration
+%duration = 60e3;
+tspan = 0:0.5:60e3;
+% Isoproterenol/Carbachol administration
+ISO_CCh_flag = 1; % (0 for control, 1 for ISO, 2 for ACh)
+
+if ISO_CCh_flag == 1
+    load yfin_Kharche_optimized_ISO
+    y0n = yfinal;
+elseif ISO_CCh_flag == 2
+    load yfin_Kharche_optimized_CCh
+    y0n = yfinal;
+end
+
+% Protocol selection
+block_index = 0;
+% 0 for no stimulation
+% 1 for no stimulation & NKA block at 10 s 
+% 2 for no stimulation & NCX block at 10 s 
+% 3 for no stimulation & LTCC block at 10 s 
+% 4 for no stimulation & NKA/NCX/LTCC modulation at 10 s 
+
+% For protocols 1-3:
+block_degree = 0.6; % (0 normal function, 1 full block)
+
+% For protocol 4:
+block_array = [0.5 0.5 0]; % differential block for NKA/NCX/LTCC
+
+% Sensitivity analysis parameters
+% 1) gst 2) gna_ttxs 3) gna_ttxr 4) gcat 5) gcal12 6) gcal13 
+% 7) gh 8) gk1 9) gkr 10) gks 11) gto 12) gsus
+% 13) gbna 14) gbca 15) inakmax 16) kNaCa 17) ks 18) Pup 19) gkach
+par_SA = ones(1,19); % not used
+    
+p = [model_index Na_clamp Cscale Mscale Lscale CChscale ZT ISO_CCh_flag block_index block_degree block_array par_SA];
+
+
+%% Run simulation
+
+disp('Running the simulation...')
+options = odeset('RelTol',1e-5,'MaxStep',1);
+[t,y] = ode15s(@mouse_SAM_eccODEfile,tspan,y0n,options,p);
+%% Saving final conditions
+
+% Find new ICs (MDP):
+[~, mdp_index] = min(y(end-3000:end,37));
+yfinal = y(mdp_index+(length(y(:,37))-3001),:);
+
+%save yfin_Kharche yfinal
+%save yfin_Kharche_updated_currents yfinal
+%save yfin_Kharche_optimized yfinal
+
+% New ICs (ISO/CCh)
+%save yfin_Kharche_optimized_ISO yfinal
+%save yfin_Kharche_optimized_CCh yfinal
+%% Plot
+
+figure, set(gcf,'color','w')
+subplot(3,1,1),set(gca,'box','off','tickdir','out','fontsize',12)
+hold on,plot(t*1e-3,y(:,37)), ylabel('Em (mV)')
+subplot(3,1,2),set(gca,'box','off','tickdir','out','fontsize',12)
+hold on,plot(t*1e-3,y(:,32)*1e3), ylabel('[Ca]i (uM)')
+subplot(3,1,3),set(gca,'box','off','tickdir','out','fontsize',12)
+hold on,plot(t*1e-3,y(:,35)), ylabel('[Na]i (mM)')
+xlabel('Time (s)')
+%% Analysis
+
+currents_flag = 1; % set currents_flag to 1 to calculate and plot ion currents
+
+analysis_flag = 1; % set analysis_flag to 1 to extract (and analyze) AP properties
+
+if currents_flag == 1
+    disp('Calculating timecourse for currents and other intermediates...')
+    
+    tc = t; yc = y; % all elements
+   
+    currents = calcCurrents_new(tc,yc,p,'currents');
+    % currents = 1/capacitance * [v_dot*capacitance ist ina_ttxs ina_ttxr...
+    %         icat ical12 ical13 ih ik1 ikr iks ito isus...
+    %         ibna ibca ibk inak inaca Jrel*capacitance];
+
+    dvdt = currents(:,1); 
+    i_st = currents(:,2); i_na11 = currents(:,3); i_na15 = currents(:,4);
+    i_cat = currents(:,5); i_cal12 = currents(:,6); i_cal13 = currents(:,7);
+    i_h = currents(:,8); i_k1 = currents(:,9); i_kr = currents(:,10);
+    i_ks = currents(:,11); i_to = currents(:,12); i_sus = currents(:,13);
+    i_bna = currents(:,14); i_bca = currents(:,15); i_bk = currents(:,16);
+    i_nak = currents(:,17); i_naca = currents(:,18); j_rel = currents(:,19);
+    j_up = currents(:,20); i_h_na = currents(:,21); i_kach = currents(:,22);
+    i_b = i_bna + i_bca + i_bk;
+
+    [pks,locs] = findpeaks(y(:,37));
+
+    figure, set(gcf,'color','w') 
+    subplot(9,1,1),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),y((locs(end-10)-150):end,37)), ylabel('AP (mV)')
+    xlim([-100 1000])
+    subplot(9,1,2),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_cal13((locs(end-10)-150):end))
+    ylabel('ICaL (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,3),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_cat((locs(end-10)-150):end))
+    ylabel('ICaT (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,4),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_h((locs(end-10)-150):end))
+    ylabel('IHCN (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,5),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_kach((locs(end-10)-150):end))
+    ylabel('IKACh (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,6),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_kr((locs(end-10)-150):end))
+    ylabel('IKr (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,7),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_na15((locs(end-10)-150):end))
+    ylabel('INa1.5 (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,8),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_naca((locs(end-10)-150):end))
+    ylabel('INCX (A/F)')
+    xlim([-100 1000])
+    subplot(9,1,9),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),i_nak((locs(end-10)-150):end))
+    ylabel('INaK (A/F)')
+    xlim([-100 1000])
+    xlabel('Time (ms)')
+    
+
+    subplot(9,1,8),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),y((locs(end-10)-150):end,32)*1e6), ylabel('[Ca]i (nM)')
+    xlim([-100 1000])
+    subplot(9,1,9),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),y((locs(end-10)-150):end,34)), ylabel('[Ca]SR (mM)')
+    xlim([-100 1000])
+    subplot(9,1,9),set(gca,'box','off','tickdir','out','fontsize',12,'LineWidth',1)
+    hold on,plot(t((locs(end-10)-150):end)-t(locs(end-10)),y((locs(end-10)-150):end,35)), ylabel('[Na]i (mM)')
+    xlim([-100 1000])
+
+    xlabel('Time (ms)')
+    
+else
+    if analysis_flag == 1
+        disp('Calculating timecourse for dEm/dt...')
+        
+        tc = t; yc = y;
+        currents = calcCurrents_new(tc,yc,p,'dVm');
+        dvdt = currents(:,1);   
+    end
+end
+
+if analysis_flag == 1
+    time = t(end-20000:end); % (ms)
+    Vm = y(end-20000:end,37); % (mV)
+    Ca = y(end-20000:end,32); % (mM)
+    Na = y(end-20000:end,35); % (mM)
+    dVm = dvdt(end-20000:end); % (mV/ms)
+
+    [ap_time cl_array apd_array] = function_SAN_vs_Time_analysis(time,Vm,dVm);
+    
+    figure, set(gcf,'color','w')
+    subplot(4,1,1),set(gca,'box','off','tickdir','out','fontsize',12)
+    hold on,plot(t(end-20000:end)*1e-3,Vm), ylabel('Em (mV)'), plot_x_lim = xlim;
+    subplot(4,1,2),set(gca,'box','off','tickdir','out','fontsize',12)
+    hold on,plot(t(end-20000:end)*1e-3,Ca*1e6), ylabel('[Ca]i (nM)')
+    subplot(4,1,3),set(gca,'box','off','tickdir','out','fontsize',12)
+    hold on,plot(t(end-20000:end)*1e-3,Na), ylabel('[Na]i (mM)')
+    subplot(4,1,4),set(gca,'box','off','tickdir','out','fontsize',12)
+    hold on,plot(ap_time*1e-3,60*1000./cl_array)
+    ylabel('FR (bpm)')
+    xlim(plot_x_lim)
+    xlabel('Time (s)')
+    
+    Na_HR = zeros(size(ap_time));
+    for i = 1:length(ap_time)
+        index_array = find(t>ap_time(i));
+        Na_HR(i) = y(index_array(1),35);
+    end
+    figure, set(gcf,'color','w')
+    plot(Na_HR,60*1000./cl_array)
+    set(gca,'box','off','tickdir','out','fontsize',12)
+    xlabel('[Na]i (mM)'), ylabel('FR (bpm)')
+    
+
+    % Analysis AP properties - last beat
+    disp('Biomarkers analysis:')
+    newoutputs = function_SAN_AP_analysis_single_beat(t,Vm,Ca,Na,dVm,0,2);
+    % rr_ms rr_Hz rr_bpm (average values over multiple beats)
+    % dVm_max -dVm_min Vm_max -Vm_min AP_amp (single beat)
+    % -TOP CL APD APD90 APD50 DD eDD eDDR lDD DDR 
+    % Ca_min Ca_max Ca_amp Ca_t50 Ca_tau Na_min
+
+    outputs = newoutputs;
+    outputs(16) = newoutputs(16)*1e6; % mM -> nM
+    outputs(17) = newoutputs(17)*1e6; % mM -> nM
+    
+    biomarkers = outputs'
+    HR_bpm = newoutputs(1)
+end   
